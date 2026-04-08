@@ -365,7 +365,6 @@ async function fetchConversationOrderIds(conversationId, currentMessageId = null
   const query = new URLSearchParams({
     $filter: `conversationId eq '${conversationId}'`,
     $select: "id,subject,bodyPreview,body,receivedDateTime",
-    $orderby: "receivedDateTime desc",
     $top: "10",
   });
 
@@ -393,7 +392,13 @@ async function fetchConversationOrderIds(conversationId, currentMessageId = null
     );
   }
 
-  const messages = (data.value || []).filter((mail) => mail.id !== currentMessageId);
+  const messages = (data.value || [])
+    .filter((mail) => mail.id !== currentMessageId)
+    .sort((a, b) => {
+      const aTime = new Date(a.receivedDateTime || 0).getTime();
+      const bTime = new Date(b.receivedDateTime || 0).getTime();
+      return bTime - aTime;
+    });
   const recoveredOrderIds = [];
 
   for (const mail of messages) {
