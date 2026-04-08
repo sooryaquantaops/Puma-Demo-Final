@@ -2,6 +2,7 @@ import fetch from "node-fetch";
 import { detectIntent } from "./engines/intentEngine.js";
 import { detectRisk } from "./engines/riskEngine.js";
 import { decideRoute } from "./engines/decisionEngine.js";
+import { callLLM } from "./ai/llmClient.js";
 
 /* -------------------------
    CONFIG (KEEP AS-IS)
@@ -97,7 +98,7 @@ async function fetchUnreadEmails() {
   const query = new URLSearchParams({
     $filter: "isRead eq false",
     $select:
-      "id,subject,from,toRecipients,ccRecipients,bodyPreview,body,replyTo,internetMessageId,receivedDateTime",
+      "id,conversationId,subject,from,toRecipients,ccRecipients,bodyPreview,body,replyTo,internetMessageId,receivedDateTime",
     $top: "50",
   });
   const res = await fetch(
@@ -344,6 +345,66 @@ function buildEmailContext(email) {
   };
 }
 
+function extractOrderIdsFromMail(mail = {}) {
+  return extractOrderIds(
+    normalizeWhitespace(
+      [
+        mail.subject || "",
+        mail.bodyPreview || "",
+        stripHtml(mail.body?.content || ""),
+      ].join("\n")
+    )
+  );
+}
+
+async function fetchConversationOrderIds(conversationId, currentMessageId = null) {
+  if (!conversationId) return [];
+
+  const token = await getAccessToken();
+  const query = new URLSearchParams({
+    $filter: `conversationId eq '${conversationId}'`,
+    $select: "id,subject,bodyPreview,body,receivedDateTime",
+    $orderby: "receivedDateTime desc",
+    $top: "10",
+  });
+
+  const res = await fetch(
+    `https://graph.microsoft.com/v1.0/users/${MAILBOX}/messages?${query.toString()}`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+
+  const raw = await res.text();
+  let data = {};
+
+  try {
+    data = raw ? JSON.parse(raw) : {};
+  } catch {
+    throw new Error(
+      `Conversation response was not valid JSON: ${raw || "empty response"}`
+    );
+  }
+
+  if (!res.ok) {
+    throw new Error(
+      `Conversation fetch failed (${res.status} ${res.statusText}): ${
+        data.error?.message || raw || "Unknown error"
+      }`
+    );
+  }
+
+  const messages = (data.value || []).filter((mail) => mail.id !== currentMessageId);
+  const recoveredOrderIds = [];
+
+  for (const mail of messages) {
+    const ids = extractOrderIdsFromMail(mail);
+    for (const id of ids) {
+      if (!recoveredOrderIds.includes(id)) recoveredOrderIds.push(id);
+    }
+  }
+
+  return recoveredOrderIds;
+}
+
 /**
  * ✅ Puma requested: include Refund Number / ARN in replies (if available)
  * ✅ FIX: your DB uses "rrn" (RRN9876...), so include it here.
@@ -360,6 +421,133 @@ function getRefundRef(orderData) {
     orderData?.refund_id ||
     null
   );
+}
+
+function getTrackingRef(orderData) {
+  return (
+    orderData?.tracking_number ||
+    orderData?.awb ||
+    orderData?.tracking_id ||
+    orderData?.shipment_id ||
+    orderData?.consignment_number ||
+    null
+  );
+}
+
+function getTrackingUrl(orderData) {
+  return (
+    orderData?.tracking_url ||
+    orderData?.tracking_link ||
+    orderData?.awb_url ||
+    null
+  );
+}
+
+function getTransactionRef(orderData) {
+  return (
+    orderData?.transaction_id ||
+    orderData?.payment_transaction_id ||
+    orderData?.payment_id ||
+    orderData?.gateway_transaction_id ||
+    orderData?.txn_id ||
+    orderData?.payment_reference ||
+    orderData?.payment_reference_number ||
+    null
+  );
+}
+
+function buildReferenceLines({
+  trackingRef = null,
+  trackingUrl = null,
+  transactionRef = null,
+  refundRef = null,
+} = {}) {
+  const lines = [];
+
+  if (trackingRef) lines.push(`<b>Tracking Number:</b> ${trackingRef}<br>`);
+  if (trackingUrl) {
+    lines.push(
+      `You can track your shipment here:<br><a href="${trackingUrl}">Track Your Order</a><br>`
+    );
+  }
+  if (transactionRef) {
+    lines.push(`<b>Transaction Reference:</b> ${transactionRef}<br>`);
+  }
+  if (refundRef) {
+    lines.push(`<b>Refund Reference / ARN / RRN:</b> ${refundRef}<br>`);
+  }
+
+  return lines.length ? `${lines.join("")}<br>` : "";
+}
+
+function buildOrderFacts(orderData = {}, orderId = "") {
+  const facts = [];
+  const status = orderData?.status || null;
+  const trackingRef = getTrackingRef(orderData);
+  const trackingUrl = getTrackingUrl(orderData);
+  const transactionRef = getTransactionRef(orderData);
+  const refundRef = getRefundRef(orderData);
+
+  if (orderId) facts.push(`Order ID: ${orderId}`);
+  if (status) facts.push(`Order Status: ${status}`);
+  if (trackingRef) facts.push(`Tracking Number: ${trackingRef}`);
+  if (trackingUrl) facts.push(`Tracking URL: ${trackingUrl}`);
+  if (transactionRef) facts.push(`Transaction Reference: ${transactionRef}`);
+  if (refundRef) facts.push(`Refund Reference / ARN / RRN: ${refundRef}`);
+  if (orderData?.refund_status) facts.push(`Refund Status: ${orderData.refund_status}`);
+  if (orderData?.created_at) facts.push(`Order Created At: ${orderData.created_at}`);
+
+  return facts;
+}
+
+async function generateEmpatheticReply({
+  emailContext,
+  intent,
+  decision,
+  orderId,
+  orderData,
+  fallbackReply,
+}) {
+  const facts = buildOrderFacts(orderData, orderId);
+  const prompt = `
+Write a customer support email reply for Puma Support.
+
+Customer latest message:
+${emailContext?.latestMessageText || ""}
+
+Thread context:
+${emailContext?.threadText || ""}
+
+Detected intent: ${intent}
+Routing owner: ${decision?.owner || "ai"}
+Case status: ${decision?.status || "open"}
+
+Verified facts you may use:
+${facts.length ? facts.map((fact) => `- ${fact}`).join("\n") : "- No verified order facts available"}
+
+Rules:
+- Be empathetic, calm, and human.
+- Do not ask for the order ID again if an order ID is already available in verified facts.
+- Use only the verified facts listed above for order, tracking, transaction, refund, ARN, and RRN details.
+- If a tracking, transaction, ARN, or RRN reference is available, include it clearly.
+- If a refund is being demanded but the verified facts only show packing/shipping status, acknowledge the frustration and explain the current verified status without inventing a refund.
+- Keep the reply concise and practical.
+- Output HTML only using <br> for line breaks.
+- End exactly with:
+Regards,<br>
+Puma Support
+`;
+
+  try {
+    return await callLLM(prompt, {
+      systemPrompt:
+        "You are Puma Support's email reply writer. Be empathetic, specific, and never invent operational facts.",
+      temperature: 0.4,
+    });
+  } catch (error) {
+    console.error("Reply generation error:", error.message);
+    return fallbackReply;
+  }
 }
 
 /* -------------------------
@@ -414,30 +602,31 @@ Puma Support
   },
 
   // --- 2. Order Status (FCR) ---
-  order_created: (id) => `
+  order_created: (id, refs = "") => `
 Hello,<br><br>
 Thank you for your order! Your order <b>${id}</b> is confirmed. 🎉<br>
 It typically takes <b>1–2 business days</b> to pack and dispatch your items.<br>
+${refs}
 You will receive an update as soon as it ships.<br><br>
 Regards,<br>
 Puma Support
 `,
 
-  order_packed: (id) => `
+  order_packed: (id, refs = "") => `
 Hello,<br><br>
 Good news! Your order <b>${id}</b> has been packed and is ready for pickup by our courier partner.<br>
+${refs}
 It should ship within the next 24 hours.<br><br>
 Regards,<br>
 Puma Support
 `,
 
- order_shipped: (id, trackingNumber = null, trackingUrl = null) => `
+ order_shipped: (id, refs = "") => `
 Hello,<br><br>
 Your order <b>${id}</b> has been shipped successfully. 🚚<br><br>
 
-${trackingNumber ? `<b>Tracking Number:</b> ${trackingNumber}<br>` : ""}
-${trackingUrl ? `You can track your shipment using the link below:<br><a href="${trackingUrl}">Track Your Order</a><br><br>` : ""}
-${!trackingNumber && !trackingUrl ? "Tracking details will be shared with you once the courier scan is available.<br><br>" : ""}
+${refs}
+${!refs ? "Tracking details will be shared with you once the courier scan is available.<br><br>" : ""}
 
 If you need any further assistance, feel free to reply to this email.<br><br>
 
@@ -463,17 +652,19 @@ Puma Support
 
 
 
-  order_delivered: (id) => `
+  order_delivered: (id, refs = "") => `
 Hello,<br><br>
 Our records show that your order <b>${id}</b> has been delivered.<br>
+${refs}
 If you have not received it, please reply to this email and we will assist you on priority.<br><br>
 Regards,<br>
 Puma Support
 `,
 
-  order_returned: (id) => `
+  order_returned: (id, refs = "") => `
 Hello,<br><br>
 We have received your return for order <b>${id}</b>.<br>
+${refs}
 Your refund is being processed and should reflect within <b>5–7 business days</b>.<br><br>
 Regards,<br>
 Puma Support
@@ -626,25 +817,25 @@ function buildReply({
     decision?.owner === "agent" || decision?.owner === "senior_support";
 
   const refundRef = getRefundRef(orderData);
+  const trackingRef = getTrackingRef(orderData);
+  const trackingUrl = getTrackingUrl(orderData);
+  const transactionRef = getTransactionRef(orderData);
+  const referenceLines = buildReferenceLines({
+    trackingRef,
+    trackingUrl,
+    transactionRef,
+    refundRef,
+  });
 
   // 3. Intent Routing
   switch (intent) {
     case "order_status": {
       const status = orderData?.status?.toLowerCase() || "processing";
-      const trackingNumber =
-        orderData?.tracking_number ||
-        orderData?.awb ||
-        orderData?.tracking_id ||
-        null;
-      const trackingUrl =
-        orderData?.tracking_url ||
-        orderData?.tracking_link ||
-        null;
 
-      if (status === "created") return templates.order_created(id);
-      if (status === "packed") return templates.order_packed(id);
-      if (status === "delivered") return templates.order_delivered(id);
-      if (status === "returned") return templates.order_returned(id);
+      if (status === "created") return templates.order_created(id, referenceLines);
+      if (status === "packed") return templates.order_packed(id, referenceLines);
+      if (status === "delivered") return templates.order_delivered(id, referenceLines);
+      if (status === "returned") return templates.order_returned(id, referenceLines);
       if (status === "delivery failed" || status === "delivery_failed") {
         return templates.delivery_attempt_failed(id, trackingUrl);
       }
@@ -652,7 +843,7 @@ function buildReply({
       if (isAgentHandoff)
         return templates.agent_handoff_stuck(id || "YOUR_ORDER");
 
-      return templates.order_shipped(id, trackingNumber, trackingUrl);
+      return templates.order_shipped(id, referenceLines);
     }
 
     case "refund_not_received": {
@@ -795,6 +986,26 @@ async function processEmails() {
           orderIds = extractOrderIds(emailContext.threadText);
         }
 
+        if (orderIds.length === 0 && emailContext.isReply && email.conversationId) {
+          try {
+            const conversationOrderIds = await fetchConversationOrderIds(
+              email.conversationId,
+              email.id
+            );
+
+            if (conversationOrderIds.length > 0) {
+              orderIds = [conversationOrderIds[0]];
+              console.log(
+                `   ↪️ Recovered Order ID from conversation: ${conversationOrderIds[0]}`
+              );
+            }
+          } catch (conversationErr) {
+            console.warn(
+              `   ⚠️ Could not recover conversation order ID: ${conversationErr.message}`
+            );
+          }
+        }
+
         // --- ORDER ID INFERENCE START ---
         let suggestedOrder = null;
         let multipleOrders = null;
@@ -866,7 +1077,7 @@ async function processEmails() {
         }
 
         // 6. Build and Send Reply
-        const replyBody = buildReply({
+        const fallbackReply = buildReply({
           intent,
           risk,
           confidence,
@@ -875,6 +1086,15 @@ async function processEmails() {
           suggestedOrder,
           multipleOrders,
           orderData,
+        });
+        const resolvedOrderId = orderIds[0] || suggestedOrder || null;
+        const replyBody = await generateEmpatheticReply({
+          emailContext,
+          intent,
+          decision,
+          orderId: resolvedOrderId,
+          orderData,
+          fallbackReply,
         });
 
         let communicationStatus = "drafted";
