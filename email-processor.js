@@ -555,7 +555,7 @@ Rules:
 - Do not ask for the order ID again if an order ID is already available in verified facts.
 - Use only the verified facts listed above for order, tracking, transaction, refund, ARN, and RRN details.
 - If a tracking, transaction, ARN, or RRN reference is available, include it clearly.
-- If DEMO_MODE is true and demo references are present, mention them in natural support language such as "For demo purposes, your sample tracking number is...".
+- If DEMO_MODE is true and demo references are present, mention them in natural support language such as ", your sample tracking number is...".
 - If a refund is being demanded but the verified facts only show packing/shipping status, acknowledge the frustration and explain the current verified status without inventing a refund.
 - Keep the reply concise and practical.
 - Output HTML only using <br> for line breaks.
