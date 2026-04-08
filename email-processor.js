@@ -13,7 +13,7 @@ const CLIENT = process.env.CLIENT_SECRET; // ✅ keep as-is (your crash already 
 const MAILBOX = "support@puma.quantaops.com";
 const AUTO_SEND_REPLIES = process.env.AUTO_SEND_REPLIES === "true";
 const ALLOWED_RECIPIENTS = [MAILBOX.toLowerCase()];
-const BLOCKED_SENDER_PATTERNS = ["tenant-app", "tenantapp", "hello@kots.world"];
+const BLOCKED_SENDER_PATTERNS = ["tenant-app", "tenantapp", "hello@kots.world","vijeth@kots.world"];
 const DEMO_MODE = process.env.DEMO_MODE === "true";
 
 // Backend API URL (default to localhost if not set)
