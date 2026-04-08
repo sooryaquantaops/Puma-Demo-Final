@@ -1,68 +1,63 @@
-import { callLLM } from "../ai/llmClient.js";
+import { callJSONLLM } from "../ai/llmClient.js";
 
-export async function decideRoute({ intent, confidence, risk }) {
+export async function decideRoute({
+  intent,
+  confidence,
+  risk,
+  emailContext = {},
+  intentMeta = {},
+  riskMeta = {},
+}) {
   const prompt = `
-  You are the **Routing Manager** for Puma Support.
-  
-  **OBJECTIVE**:
-  Decide whether the case can be handled by **AI (FCR)** or must be assigned to an **AGENT**.
-  
-  **INPUT DATA**:
-  - Intent: "${intent}"
-  - Confidence: ${confidence}
-  - Risk Flag: ${risk}
-  
-  **ROUTING MATRIX**:
-  
-  1. **CRITICAL OVERRIDE (Risk)**
-     - If Risk = true \u2192 **ESCALATE** immediately.
-     - Status: "escalated", Owner: "senior_support"
-  
-  2. **LOW CONFIDENCE**
-     - If Confidence < 0.70 \u2192 **AGENT**.
-     - Status: "open", Owner: "agent"
-  
-  3. **INTENT-SPECIFIC RULES**:
-  
-     A. **Order Status**
-        - Standard queries (Where is my order?) \u2192 **AI** (We will fetch status and reply).
-        - Exception: If user implies "Stuck for many days", "No movement", "Failed delivery multiple times" \u2192 **AGENT**.
-  
-     B. **Refund Not Received**
-        - Standard query (in timeline) \u2192 **AI**.
-        - Exception: "Refund failed", "Bank denied", "Months passed" \u2192 **AGENT**.
-  
-     C. **Cancellation**
-        - \u2192 **AI** (We provide self-serve WhatsApp link).
-  
-     D. **Address Change**
-        - \u2192 **AI** (We strictly inform not supported post-shipment).
-  
-     E. **Report Problem / Payment Issue / Returns**
-        - \u2192 **AGENT** (Requires manual validation).
-        
-     F. **Invoice**
-        - \u2192 **AI** (Auto-email trigger).
-  
-  **OUTPUT DECISIONS**:
-  - **status**: "resolved" (if AI handles), "open" (if Agent), "escalated" (if Risk).
-  - **owner**: "ai" or "agent" or "senior_support".
-  
-  **JSON OUTPUT ONLY**:
-  {
-    "status": "open",
-    "owner": "agent"
-  }
-  `;
+You are the Routing Manager for Puma Support.
+
+Decide whether this case should be handled by AI or by a human agent.
+
+Inputs:
+- intent: ${intent}
+- confidence: ${confidence}
+- risk: ${risk}
+- is_reply_in_thread: ${Boolean(emailContext.isReply)}
+- latest_customer_message:
+${(emailContext.latestMessageText || "").substring(0, 2000)}
+
+Intent signals:
+${JSON.stringify(intentMeta?.signals || {}, null, 2)}
+
+Risk signals:
+${JSON.stringify(riskMeta?.flags || {}, null, 2)}
+
+Routing policy:
+- If risk is true -> status "escalated", owner "senior_support".
+- If confidence < 0.7 -> status "open", owner "agent".
+- order_status -> AI, unless latest message suggests repeated delay, no movement, repeated failed delivery, or explicit dissatisfaction with prior support.
+- refund_not_received -> AI, unless latest message mentions bank denial, chargeback/dispute, extreme delay, or repeated follow-up after prior support.
+- cancellation_request -> AI.
+- address_change_request -> AI.
+- invoice_request -> AI.
+- report_problem -> AGENT.
+- payment_issue -> AGENT.
+- delivery_issue -> AGENT.
+- return_exchange_request -> AGENT.
+- general_inquiry -> AGENT.
+- unknown -> AGENT.
+
+Return one valid JSON object in exactly this shape:
+{
+  "status": "open",
+  "owner": "agent",
+  "reason": "confidence_below_threshold"
+}
+`;
 
   try {
-    const res = await callLLM(prompt);
-    const cleaned = res.trim().replace(/^```json/, "").replace(/```$/, "").trim();
-    return JSON.parse(cleaned);
+    return await callJSONLLM(prompt, {
+      systemPrompt:
+        "You are a support routing engine. Follow the routing policy exactly and return only the requested JSON.",
+    });
   } catch (e) {
     console.error("Decision Engine Error:", e);
-    // Safe fallback
-    if (risk) return { status: "escalated", owner: "senior_support" };
-    return { status: "open", owner: "agent" };
+    if (risk) return { status: "escalated", owner: "senior_support", reason: "risk_override" };
+    return { status: "open", owner: "agent", reason: "fallback" };
   }
 }
