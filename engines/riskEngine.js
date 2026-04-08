@@ -1,46 +1,80 @@
-import { callLLM } from "../ai/llmClient.js";
+import { callJSONLLM } from "../ai/llmClient.js";
+
+const FALLBACK = {
+  risk: false,
+  category: null,
+  reason: null,
+  evidence: null,
+  flags: {
+    legal: false,
+    fraud: false,
+    financial_dispute: false,
+    harassment: false,
+    social_escalation: false,
+    police: false,
+  },
+};
 
 export async function detectRisk(email) {
   const prompt = `
-  You are the **Risk & Compliance Officer** for Puma Customer Support.
-  
-  **OBJECTIVE**:
-  Analyze the incoming customer email and detect any **HIGH-RISK** triggers that require immediate escalation to a human agent.
-  
-  **HIGH-RISK KEYWORDS & CONCEPTS**:
-  Scan for the following specific themes. Matches can be exact or semantic (intent-based).
-  
-  1. **Legal Action**: "Lawyer", "Sue", "Legal", "Court", "Case", "Notice", "Consumer Forum".
-  2. **Fraud / Scam**: "Fraud", "Scam", "Cheated", "Fake", "Counterfeit".
-  3. **Financial Disputes**: "Chargeback", "Dispute", "Bank complaint", "Unauthorized transaction".
-  4. **Harassment / Abuse**: Profanity, threats to staff, abusive language.
-  5. **Social Media Escalation**: "Twitter", "X.com", "LinkedIn", "Facebook", "Viral", "Post online", "Influencer".
-  6. **Government / Police**: "Police", "FIR", "Complaint", "Authorities".
-  
-  **OUTPUT RULES**:
-  - If ANY of the above are detected \u2192 **risk: true**.
-  - If the email is a standard complaint (delayed delivery, refund pending) without threats \u2192 **risk: false**.
-  - **Reason**: meaningful short extraction of the keyword or phrase found.
-  
-  **JSON OUTPUT ONLY**:
-  {
-    "risk": true,
-    "reason": "Threatened consumer court"
+You are the Risk and Compliance Officer for Puma Customer Support.
+
+Review the newest customer-written message and decide whether it contains a high-risk escalation that requires immediate human handling.
+
+High-risk categories:
+- legal
+- fraud
+- financial_dispute
+- harassment
+- social_escalation
+- police
+
+Rules:
+- Focus on the latest customer-written message, not the quoted thread.
+- Mark risk true only when there is explicit threat, abuse, legal/police escalation, fraud allegation, chargeback/dispute language, or a stated public social-media escalation.
+- Normal complaints like delayed delivery, refund pending, product return, or frustration without threat should be risk false.
+- evidence should be a short snippet from the latest customer message when risk is true; otherwise null.
+
+Return one valid JSON object in exactly this shape:
+{
+  "risk": false,
+  "category": null,
+  "reason": null,
+  "evidence": null,
+  "flags": {
+    "legal": false,
+    "fraud": false,
+    "financial_dispute": false,
+    "harassment": false,
+    "social_escalation": false,
+    "police": false
   }
-  
-  **EMAIL TO ANALYZE**:
-  Subject: ${email.subject}
-  Body:
-  ${(email.body_preview || "").substring(0, 3000)}
-  ${(email.body?.content || "").substring(0, 3000)}
-  `;
+}
+
+Subject: ${email.subject || ""}
+Latest customer message:
+${(email.latestMessageText || "").substring(0, 3000)}
+
+Thread context:
+${(email.threadText || "").substring(0, 2000)}
+`;
 
   try {
-    const res = await callLLM(prompt);
-    const cleaned = res.trim().replace(/^```json/, "").replace(/```$/, "").trim();
-    return JSON.parse(cleaned);
+    const res = await callJSONLLM(prompt, {
+      systemPrompt:
+        "You are a conservative risk classifier. Only flag risk when the latest message clearly supports it.",
+    });
+
+    return {
+      ...FALLBACK,
+      ...res,
+      flags: {
+        ...FALLBACK.flags,
+        ...(res?.flags || {}),
+      },
+    };
   } catch (e) {
     console.error("Risk Engine Error:", e);
-    return { risk: false, reason: "error" };
+    return FALLBACK;
   }
 }
