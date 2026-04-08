@@ -530,7 +530,10 @@ async function generateEmpatheticReply({
   orderId,
   orderData,
   fallbackReply,
+  forceFallback = false,
 }) {
+  if (forceFallback) return fallbackReply;
+
   const facts = buildOrderFacts(orderData, orderId);
   const prompt = `
 Write a customer support email reply for Puma Support.
@@ -1114,6 +1117,10 @@ async function processEmails() {
           orderData,
         });
         const resolvedOrderId = orderIds[0] || suggestedOrder || null;
+        const shouldForceFallback =
+          !resolvedOrderId &&
+          (Array.isArray(multipleOrders) && multipleOrders.length > 1);
+
         const replyBody = await generateEmpatheticReply({
           emailContext,
           intent,
@@ -1121,6 +1128,15 @@ async function processEmails() {
           orderId: resolvedOrderId,
           orderData,
           fallbackReply,
+          forceFallback: shouldForceFallback || (!resolvedOrderId && [
+            "order_status",
+            "refund_not_received",
+            "invoice_request",
+            "report_problem",
+            "delivery_issue",
+            "payment_issue",
+            "return_exchange_request",
+          ].includes(intent)),
         });
 
         let communicationStatus = "drafted";
