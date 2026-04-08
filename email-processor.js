@@ -10,10 +10,11 @@ const TENANT_ID = "7e1d931c-a318-4d9d-8472-62e2437de1b0";
 const CLIENT_ID = "89f6a458-fc26-4cb5-9e1b-ee045588c093";
 const CLIENT = process.env.CLIENT_SECRET; // ✅ keep as-is (your crash already resolved)
 const MAILBOX = "support@puma.quantaops.com";
+const AUTO_SEND_REPLIES = process.env.AUTO_SEND_REPLIES === "true";
 
 // Backend API URL (default to localhost if not set)
 const API_URL =
-  process.env.API_URL || "https://puma-backend-demo-production.up.railway.app";
+  process.env.API_URL || "https://puma-backend-demo-production-6abd.up.railway.app";
 
 /* -------------------------
    API HELPERS
@@ -113,6 +114,62 @@ async function sendReply(messageId, body) {
 
   console.log(`↩️ Replied to message ${messageId}`);
   return true;
+}
+
+async function updateDraftBody(messageId, body) {
+  const token = await getAccessToken();
+
+  const payload = {
+    body: {
+      contentType: "HTML",
+      content: body,
+    },
+  };
+
+  const res = await fetch(
+    `https://graph.microsoft.com/v1.0/users/${MAILBOX}/messages/${messageId}`,
+    {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    }
+  );
+
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error("Failed to update draft: " + t);
+  }
+
+  return true;
+}
+
+async function createReplyDraft(messageId, body) {
+  const token = await getAccessToken();
+
+  const res = await fetch(
+    `https://graph.microsoft.com/v1.0/users/${MAILBOX}/messages/${messageId}/createReply`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error("Failed to create reply draft: " + t);
+  }
+
+  const draft = await res.json();
+  await updateDraftBody(draft.id, body);
+
+  console.log(`Drafted reply ${draft.id} for message ${messageId}`);
+  return draft;
 }
 
 /* -------------------------
@@ -603,14 +660,24 @@ async function processEmails() {
           orderData,
         });
 
-        const replySent = await sendReply(emailId, replyBody);
+        let communicationStatus = "drafted";
+        let communicationCreated = false;
 
-        if (replySent && caseId) {
+        if (AUTO_SEND_REPLIES) {
+          const replySent = await sendReply(emailId, replyBody);
+          communicationCreated = Boolean(replySent);
+          if (replySent) communicationStatus = "sent";
+        } else {
+          const replyDraft = await createReplyDraft(emailId, replyBody);
+          communicationCreated = Boolean(replyDraft?.id);
+        }
+
+        if (communicationCreated && caseId) {
           await apiCall("/communications", "POST", {
             case_id: caseId,
             channel: "email",
             template_id: intent,
-            message_status: "sent",
+            message_status: communicationStatus,
             sent_at: new Date().toISOString(),
           });
         }
