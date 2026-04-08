@@ -77,12 +77,12 @@ async function getAccessToken() {
 async function fetchUnreadEmails() {
   const token = await getAccessToken();
   const res = await fetch(
-    `https://graph.microsoft.com/v1.0/users/${MAILBOX}/mailFolders/inbox/messages?$filter=isRead eq false`,
+    `https://graph.microsoft.com/v1.0/users/${MAILBOX}/mailFolders/inbox/messages?$filter=isRead eq false&$select=id,internetMessageId,subject,bodyPreview,body,receivedDateTime,from,toRecipients,ccRecipients,replyTo,inReplyTo,conversationId`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
   const data = await res.json();
   if (!res.ok) throw new Error("Graph error");
-  return data.value || [];
+  return (data.value || []).filter(isMailboxRecipient);
 }
 
 /* -------------------------
@@ -177,6 +177,20 @@ async function createReplyDraft(messageId, body) {
 --------------------------*/
 function extractOrderIds(text = "") {
   return [...new Set(text.match(/\b\d{5,}\b/g) || [])];
+}
+
+function isMailboxRecipient(email) {
+  const mailbox = MAILBOX.toLowerCase();
+  const recipients = [
+    ...(email.toRecipients || []),
+    ...(email.ccRecipients || []),
+    ...(email.replyTo || []),
+  ]
+    .map((entry) => entry?.emailAddress?.address?.toLowerCase())
+    .filter(Boolean);
+
+  if (recipients.length === 0) return true;
+  return recipients.includes(mailbox);
 }
 
 function decodeHtmlEntities(text = "") {
