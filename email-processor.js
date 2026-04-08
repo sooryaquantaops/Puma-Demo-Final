@@ -283,6 +283,13 @@ function mergeUniqueTextBlocks(...parts) {
   return normalizeWhitespace(merged.join("\n"));
 }
 
+function formatRecipientAddresses(list = []) {
+  return list
+    .map((recipient) => recipient.emailAddress?.address)
+    .filter(Boolean)
+    .join(", ");
+}
+
 function extractLatestCustomerMessage(email) {
   const htmlText = stripHtml(email.body?.content || "");
   const previewText = email.bodyPreview || "";
@@ -693,6 +700,14 @@ async function processEmails() {
       if (!emailId) continue;
 
       try {
+        const toAddresses = formatRecipientAddresses(email.toRecipients);
+        const ccAddresses = formatRecipientAddresses(email.ccRecipients);
+        const fromAddress = email.from?.emailAddress?.address || "";
+
+        console.log(
+          `[MAIL DEBUG] From: ${fromAddress} | To: ${toAddresses || "(none)"} | CC: ${ccAddresses || "(none)"} | Subject: ${email.subject || "(no subject)"}`
+        );
+
         const senderEmail = email.from?.emailAddress?.address?.toLowerCase() || "";
         const isBlockedSender = BLOCKED_SENDER_PATTERNS.some((pattern) =>
           senderEmail.includes(pattern)
