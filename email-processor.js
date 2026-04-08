@@ -176,7 +176,6 @@ async function createReplyDraft(messageId, body) {
    HELPERS
 --------------------------*/
 function extractOrderIds(text = "") {
-  return text.match(/\b\d{5,}\b/g) || [];
   return [...new Set(text.match(/\b\d{5,}\b/g) || [])];
 }
 
@@ -368,14 +367,10 @@ Regards,<br>
 Puma Support
 `,
 
- order_shipped: (id) => `
  order_shipped: (id, trackingNumber = null, trackingUrl = null) => `
 Hello,<br><br>
 Your order <b>${id}</b> has been shipped successfully. 🚚<br><br>
 
-<b>Tracking Number:</b> 10320323<br>
-You can track your shipment using our courier partner link below:<br>
-<a href="https://courier-demo.puma.com/track/10320323">Track Your Order</a><br><br>
 ${trackingNumber ? `<b>Tracking Number:</b> ${trackingNumber}<br>` : ""}
 ${trackingUrl ? `You can track your shipment using the link below:<br><a href="${trackingUrl}">Track Your Order</a><br><br>` : ""}
 ${!trackingNumber && !trackingUrl ? "Tracking details will be shared with you once the courier scan is available.<br><br>" : ""}
@@ -387,7 +382,6 @@ Puma Support
 `,
 
 
-delivery_attempt_failed: (id) => `
 delivery_attempt_failed: (id, trackingUrl = null) => `
 Hello,<br><br>
 We noticed that a delivery attempt was not successful for your order <b>${id}</b>.<br><br>
@@ -395,8 +389,6 @@ We noticed that a delivery attempt was not successful for your order <b>${id}</b
 Our courier partner will attempt delivery again on the next business day.<br>
 Kindly ensure someone is available to receive the package.<br><br>
 
-Please use the link below to track your order in the meanwhile:<br>
-<a href="https://courier-demo.puma.com/track/90034">Track Your Order</a><br><br>
 ${trackingUrl ? `Please use the link below to track your order in the meanwhile:<br><a href="${trackingUrl}">Track Your Order</a><br><br>` : ""}
 
 Additionally, our support assistant will guide you shortly to ensure successful delivery.<br><br>
@@ -492,19 +484,9 @@ Puma Support
   // --- 7. Risk / Other ---
  high_risk_escalation: (id, arn = "ARN123456789") => `
 Hello,<br><br>
-Thank you for reaching out to us.<br><br>
-
-We have located the order <b>${id}</b> associated with your email.  
-Our records confirm that the refund has already been <b>processed successfully</b>.<br><br>
-
 Thank you for reaching out to us${id ? ` regarding order <b>${id}</b>` : ""}.<br><br>
 Your email has been flagged for priority review and has been assigned to a support specialist.<br>
 <b>Refund Reference / ARN:</b> ${arn}<br><br>
-
-We request you to kindly check with your bank using the above reference number, as banks may take some time to reflect the amount.<br><br>
-
-If the amount is still not visible, please reply to this email and we will assist you further.<br><br>
-
 Our team will get back to you shortly with the next steps.<br><br>
 Regards,<br>
 Puma Support
@@ -550,16 +532,11 @@ function buildReply({
   multipleOrders,
   orderData,
 }) {
-  // 1. Risk Override
-  if (risk) return templates.high_risk_escalation();
-
-  // 2. Multiple Orders Found -> Ask user to choose
   // 1. Multiple Orders Found -> Ask user to choose
   if (multipleOrders && multipleOrders.length > 1) {
     return templates.multiple_orders_found(multipleOrders);
   }
 
-  // 3. Missing Order ID check
   // 2. Missing Order ID check
   const activeOrderId = orderIds[0] || suggestedOrder;
 
@@ -586,7 +563,6 @@ function buildReply({
 
   const refundRef = getRefundRef(orderData);
 
-  // 4. Intent Routing
   // 3. Intent Routing
   switch (intent) {
     case "order_status": {
@@ -608,10 +584,8 @@ function buildReply({
       if (status === "delivered") return templates.order_delivered(id);
       if (status === "returned") return templates.order_returned(id);
    if (status === "delivery failed" || status === "delivery_failed") {
-  return templates.delivery_attempt_failed(id);
   return templates.delivery_attempt_failed(id, trackingUrl);
 }
-      return templates.order_shipped(id);
       return templates.order_shipped(id, trackingNumber, trackingUrl);
     }
 
@@ -690,8 +664,6 @@ async function processEmails() {
         }
 
         // 2. AI Engines
-        const intentRes = await detectIntent(email);
-        const riskRes = await detectRisk(email);
         const analysisInput = {
           ...email,
           ...emailContext,
@@ -703,7 +675,6 @@ async function processEmails() {
         const confidence = Number(intentRes.confidence || 0.1);
         const risk = Boolean(riskRes.risk);
 
-        const decision = await decideRoute({ intent, confidence, risk });
         const decision = await decideRoute({
           intent,
           confidence,
@@ -718,8 +689,6 @@ async function processEmails() {
         );
 
         // 3. Extract Order IDs
-        const text = `${email.subject || ""} ${email.bodyPreview || ""}`;
-        let orderIds = extractOrderIds(text);
         let orderIds = extractOrderIds(emailContext.searchText);
 
         if (orderIds.length === 0) {
