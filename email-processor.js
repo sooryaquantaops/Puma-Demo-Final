@@ -7,8 +7,8 @@ import { callLLM } from "./ai/llmClient.js";
 /* -------------------------
    CONFIG (KEEP AS-IS)
 --------------------------*/
-const TENANT_ID = "7e1d931c-a318-4d9d-8472-62e2437de1b0";
-const CLIENT_ID = "89f6a458-fc26-4cb5-9e1b-ee045588c093";
+const TENANT_ID = "28d24c65-85c8-4d7e-ab2d-fba854d72713";
+const CLIENT_ID = "3a8b5982-6517-4dd6-ac1c-f63d4caf4ea9";
 const CLIENT = process.env.CLIENT_SECRET; // ✅ keep as-is (your crash already resolved)
 const MAILBOX = "support@puma.quantaops.com";
 const AUTO_SEND_REPLIES = process.env.AUTO_SEND_REPLIES === "true";
