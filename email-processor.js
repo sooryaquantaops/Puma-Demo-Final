@@ -95,7 +95,7 @@ async function fetchUnreadEmails() {
   const query = new URLSearchParams({
     $filter: "isRead eq false",
     $select:
-      "id,subject,from,toRecipients,bodyPreview,body,inReplyTo,replyTo,internetMessageId,receivedDateTime",
+      "id,subject,from,toRecipients,bodyPreview,body,replyTo,internetMessageId,receivedDateTime",
     $top: "50",
   });
   const res = await fetch(
