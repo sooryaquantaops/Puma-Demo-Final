@@ -12,7 +12,7 @@ const CLIENT = process.env.CLIENT_SECRET; // ✅ keep as-is (your crash already 
 const MAILBOX = "support@puma.quantaops.com";
 const AUTO_SEND_REPLIES = process.env.AUTO_SEND_REPLIES === "true";
 const ALLOWED_RECIPIENTS = [MAILBOX.toLowerCase()];
-const BLOCKED_SENDER_PATTERNS = ["tenant-app", "tenantapp", "hello@kots.world","vijeth@kots.world"];
+const BLOCKED_SENDER_PATTERNS = ["tenant-app", "tenantapp", "hello@kots.world"];
 
 // Backend API URL (default to localhost if not set)
 const API_URL =
@@ -630,9 +630,6 @@ function buildReply({
   // 3. Intent Routing
   switch (intent) {
     case "order_status": {
-      if (isAgentHandoff)
-        return templates.agent_handoff_stuck(id || "YOUR_ORDER");
-
       const status = orderData?.status?.toLowerCase() || "processing";
       const trackingNumber =
         orderData?.tracking_number ||
@@ -643,13 +640,18 @@ function buildReply({
         orderData?.tracking_url ||
         orderData?.tracking_link ||
         null;
+
       if (status === "created") return templates.order_created(id);
       if (status === "packed") return templates.order_packed(id);
       if (status === "delivered") return templates.order_delivered(id);
       if (status === "returned") return templates.order_returned(id);
-   if (status === "delivery failed" || status === "delivery_failed") {
-  return templates.delivery_attempt_failed(id, trackingUrl);
-}
+      if (status === "delivery failed" || status === "delivery_failed") {
+        return templates.delivery_attempt_failed(id, trackingUrl);
+      }
+
+      if (isAgentHandoff)
+        return templates.agent_handoff_stuck(id || "YOUR_ORDER");
+
       return templates.order_shipped(id, trackingNumber, trackingUrl);
     }
 
