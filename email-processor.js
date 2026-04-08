@@ -11,6 +11,7 @@ const CLIENT_ID = "89f6a458-fc26-4cb5-9e1b-ee045588c093";
 const CLIENT = process.env.CLIENT_SECRET; // ✅ keep as-is (your crash already resolved)
 const MAILBOX = "support@puma.quantaops.com";
 const AUTO_SEND_REPLIES = process.env.AUTO_SEND_REPLIES === "true";
+const ALLOWED_RECIPIENTS = [MAILBOX.toLowerCase()];
 
 // Backend API URL (default to localhost if not set)
 const API_URL =
@@ -95,7 +96,7 @@ async function fetchUnreadEmails() {
   const query = new URLSearchParams({
     $filter: "isRead eq false",
     $select:
-      "id,subject,from,toRecipients,bodyPreview,body,replyTo,internetMessageId,receivedDateTime",
+      "id,subject,from,toRecipients,ccRecipients,bodyPreview,body,replyTo,internetMessageId,receivedDateTime",
     $top: "50",
   });
   const res = await fetch(
@@ -119,14 +120,18 @@ async function fetchUnreadEmails() {
     );
   }
 
-  const supportAddress = MAILBOX.toLowerCase();
+  const matches = (mail) => {
+    const check = (list) =>
+      list?.some((recipient) =>
+        ALLOWED_RECIPIENTS.includes(
+          recipient.emailAddress?.address?.toLowerCase()
+        )
+      );
 
-  return (data.value || []).filter((mail) =>
-    mail.toRecipients?.some(
-      (recipient) =>
-        recipient.emailAddress?.address?.toLowerCase() === supportAddress
-    )
-  );
+    return check(mail.toRecipients) || check(mail.ccRecipients);
+  };
+
+  return (data.value || []).filter(matches);
 }
 
 /* -------------------------
@@ -680,11 +685,16 @@ async function processEmails() {
       if (!emailId) continue;
 
       try {
-        const isSupportRecipient = email.toRecipients?.some(
-          (recipient) =>
-            recipient.emailAddress?.address?.toLowerCase() ===
-            MAILBOX.toLowerCase()
-        );
+        const isSupportRecipient = (() => {
+          const check = (list) =>
+            list?.some((recipient) =>
+              ALLOWED_RECIPIENTS.includes(
+                recipient.emailAddress?.address?.toLowerCase()
+              )
+            );
+
+          return check(email.toRecipients) || check(email.ccRecipients);
+        })();
 
         if (!isSupportRecipient) {
           console.log(`Skipping email not addressed to ${MAILBOX}: ${email.subject}`);
