@@ -12,6 +12,7 @@ const CLIENT = process.env.CLIENT_SECRET; // ✅ keep as-is (your crash already 
 const MAILBOX = "support@puma.quantaops.com";
 const AUTO_SEND_REPLIES = process.env.AUTO_SEND_REPLIES === "true";
 const ALLOWED_RECIPIENTS = [MAILBOX.toLowerCase()];
+const BLOCKED_SENDER_PATTERNS = ["tenant-app", "tenantapp"];
 
 // Backend API URL (default to localhost if not set)
 const API_URL =
@@ -131,7 +132,14 @@ async function fetchUnreadEmails() {
     return check(mail.toRecipients) || check(mail.ccRecipients);
   };
 
-  return (data.value || []).filter(matches);
+  const isBlockedSender = (mail) => {
+    const sender = mail.from?.emailAddress?.address?.toLowerCase() || "";
+    return BLOCKED_SENDER_PATTERNS.some((pattern) => sender.includes(pattern));
+  };
+
+  return (data.value || []).filter(
+    (mail) => matches(mail) && !isBlockedSender(mail)
+  );
 }
 
 /* -------------------------
@@ -685,6 +693,16 @@ async function processEmails() {
       if (!emailId) continue;
 
       try {
+        const senderEmail = email.from?.emailAddress?.address?.toLowerCase() || "";
+        const isBlockedSender = BLOCKED_SENDER_PATTERNS.some((pattern) =>
+          senderEmail.includes(pattern)
+        );
+
+        if (isBlockedSender) {
+          console.log(`Skipping tenant-app mail: ${email.subject}`);
+          continue;
+        }
+
         const isSupportRecipient = (() => {
           const check = (list) =>
             list?.some((recipient) =>
@@ -704,7 +722,7 @@ async function processEmails() {
         console.log(`🔹 Processing email: ${email.subject}`);
 
         // 0. Extract Sender Email
-        const senderEmail = email.from?.emailAddress?.address;
+        const senderEmailOriginal = email.from?.emailAddress?.address;
         const emailContext = buildEmailContext(email);
 
         // 1. Injest Email to DB
@@ -712,7 +730,7 @@ async function processEmails() {
           message_id: email.id,
           internet_message_id: email.internetMessageId,
           from_name: email.from?.emailAddress?.name,
-          from_email: senderEmail,
+          from_email: senderEmailOriginal,
           to_email: MAILBOX,
           subject: email.subject,
           body_preview: email.bodyPreview,
@@ -764,8 +782,8 @@ async function processEmails() {
         let suggestedOrder = null;
         let multipleOrders = null;
 
-        if (orderIds.length === 0 && senderEmail) {
-          const customerOrders = await fetchCustomerOrders(senderEmail);
+        if (orderIds.length === 0 && senderEmailOriginal) {
+          const customerOrders = await fetchCustomerOrders(senderEmailOriginal);
 
           if (customerOrders && customerOrders.length === 1) {
             suggestedOrder = customerOrders[0].order_id;
@@ -774,7 +792,7 @@ async function processEmails() {
             multipleOrders = customerOrders;
             console.log(`   ⚠️ Multiple orders found: ${customerOrders.length}`);
           } else {
-            console.log(`   ❌ No orders found for ${senderEmail}`);
+            console.log(`   ❌ No orders found for ${senderEmailOriginal}`);
           }
         }
         // --- ORDER ID INFERENCE END ---
