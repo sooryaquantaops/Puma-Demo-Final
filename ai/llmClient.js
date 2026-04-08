@@ -1,6 +1,8 @@
 import fetch from "node-fetch";
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_MODEL =
+  process.env.GEMINI_MODEL || "gemini-3.1-flash-lite-preview";
 
 function extractJsonText(text) {
   const cleaned = text
@@ -21,33 +23,49 @@ function extractJsonText(text) {
 }
 
 export async function callLLM(prompt, options = {}) {
-  const { systemPrompt } = options;
-  const messages = [];
+  const { systemPrompt, temperature = 0 } = options;
+  if (!GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY is not configured");
+  }
 
-  if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
-  messages.push({ role: "user", content: prompt });
-
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+    {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "gpt-4o-mini",
-      temperature: 0,
-      messages,
+      system_instruction: systemPrompt
+        ? {
+            parts: [{ text: systemPrompt }],
+          }
+        : undefined,
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: prompt }],
+        },
+      ],
+      generationConfig: {
+        temperature,
+      },
     }),
-  });
+    }
+  );
 
   const data = await res.json();
 
   if (!res.ok || data.error) {
-    console.error("OpenAI API error:", data.error || data);
-    throw new Error(data?.error?.message || `OpenAI request failed with ${res.status}`);
+    console.error("Gemini API error:", data.error || data);
+    throw new Error(data?.error?.message || `Gemini request failed with ${res.status}`);
   }
 
-  const text = data?.choices?.[0]?.message?.content || "";
+  const text =
+    data?.candidates?.[0]?.content?.parts
+      ?.map((part) => part.text || "")
+      .join("")
+      .trim() || "";
 
   if (!text) {
     console.error("Empty LLM response:", JSON.stringify(data));
