@@ -13,7 +13,8 @@ const CLIENT = process.env.CLIENT_SECRET; // ✅ keep as-is (your crash already 
 const MAILBOX = "support@puma.quantaops.com";
 const AUTO_SEND_REPLIES = process.env.AUTO_SEND_REPLIES === "true";
 const ALLOWED_RECIPIENTS = [MAILBOX.toLowerCase()];
-const BLOCKED_SENDER_PATTERNS = ["tenant-app", "tenantapp", "hello@kots.world","vijeth@kots.world"];
+const BLOCKED_SENDER_PATTERNS = ["tenant-app", "tenantapp", "hello@kots.world"];
+const DEMO_MODE = process.env.DEMO_MODE === "true";
 
 // Backend API URL (default to localhost if not set)
 const API_URL =
@@ -456,6 +457,16 @@ function getTransactionRef(orderData) {
   );
 }
 
+function buildDemoReferences(orderId = "") {
+  const suffix = orderId || "PUMA";
+  return {
+    trackingRef: `DEMO-TRK-${suffix}`,
+    trackingUrl: `https://example.com/demo-tracking/${encodeURIComponent(suffix)}`,
+    transactionRef: `DEMO-TXN-${suffix}`,
+    refundRef: `DEMO-RRN-${suffix}`,
+  };
+}
+
 function buildReferenceLines({
   trackingRef = null,
   trackingUrl = null,
@@ -483,17 +494,29 @@ function buildReferenceLines({
 function buildOrderFacts(orderData = {}, orderId = "") {
   const facts = [];
   const status = orderData?.status || null;
-  const trackingRef = getTrackingRef(orderData);
-  const trackingUrl = getTrackingUrl(orderData);
-  const transactionRef = getTransactionRef(orderData);
-  const refundRef = getRefundRef(orderData);
+  const demoRefs = DEMO_MODE ? buildDemoReferences(orderId) : {};
+  const trackingRef = getTrackingRef(orderData) || demoRefs.trackingRef || null;
+  const trackingUrl = getTrackingUrl(orderData) || demoRefs.trackingUrl || null;
+  const transactionRef =
+    getTransactionRef(orderData) || demoRefs.transactionRef || null;
+  const refundRef = getRefundRef(orderData) || demoRefs.refundRef || null;
 
   if (orderId) facts.push(`Order ID: ${orderId}`);
   if (status) facts.push(`Order Status: ${status}`);
-  if (trackingRef) facts.push(`Tracking Number: ${trackingRef}`);
-  if (trackingUrl) facts.push(`Tracking URL: ${trackingUrl}`);
-  if (transactionRef) facts.push(`Transaction Reference: ${transactionRef}`);
-  if (refundRef) facts.push(`Refund Reference / ARN / RRN: ${refundRef}`);
+  if (trackingRef)
+    facts.push(`${DEMO_MODE ? "Demo " : ""}Tracking Number: ${trackingRef}`);
+  if (trackingUrl)
+    facts.push(`${DEMO_MODE ? "Demo " : ""}Tracking URL: ${trackingUrl}`);
+  if (transactionRef) {
+    facts.push(
+      `${DEMO_MODE ? "Demo " : ""}Transaction Reference: ${transactionRef}`
+    );
+  }
+  if (refundRef) {
+    facts.push(
+      `${DEMO_MODE ? "Demo " : ""}Refund Reference / ARN / RRN: ${refundRef}`
+    );
+  }
   if (orderData?.refund_status) facts.push(`Refund Status: ${orderData.refund_status}`);
   if (orderData?.created_at) facts.push(`Order Created At: ${orderData.created_at}`);
 
@@ -521,15 +544,18 @@ ${emailContext?.threadText || ""}
 Detected intent: ${intent}
 Routing owner: ${decision?.owner || "ai"}
 Case status: ${decision?.status || "open"}
+DEMO_MODE: ${DEMO_MODE}
 
 Verified facts you may use:
 ${facts.length ? facts.map((fact) => `- ${fact}`).join("\n") : "- No verified order facts available"}
 
 Rules:
 - Be empathetic, calm, and human.
+- If DEMO_MODE is true, naturally weave demo references into the reply while making it clear they are demo/sample references.
 - Do not ask for the order ID again if an order ID is already available in verified facts.
 - Use only the verified facts listed above for order, tracking, transaction, refund, ARN, and RRN details.
 - If a tracking, transaction, ARN, or RRN reference is available, include it clearly.
+- If DEMO_MODE is true and demo references are present, mention them in natural support language such as "For demo purposes, your sample tracking number is...".
 - If a refund is being demanded but the verified facts only show packing/shipping status, acknowledge the frustration and explain the current verified status without inventing a refund.
 - Keep the reply concise and practical.
 - Output HTML only using <br> for line breaks.
