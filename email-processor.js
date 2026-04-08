@@ -69,19 +69,56 @@ async function getAccessToken() {
     }
   );
 
-  const data = await res.json();
+  const raw = await res.text();
+  let data = {};
+
+  try {
+    data = raw ? JSON.parse(raw) : {};
+  } catch {
+    throw new Error(`Token response was not valid JSON: ${raw || "empty response"}`);
+  }
+
+  if (!res.ok) {
+    throw new Error(
+      `Token request failed (${res.status} ${res.statusText}): ${
+        data.error_description || data.error?.message || raw || "Unknown error"
+      }`
+    );
+  }
+
   if (!data.access_token) throw new Error("Failed to get token");
   return data.access_token;
 }
 
 async function fetchUnreadEmails() {
   const token = await getAccessToken();
+  const query = new URLSearchParams({
+    $filter: "isRead eq false",
+    $select:
+      "id,subject,from,toRecipients,bodyPreview,body,inReplyTo,replyTo,internetMessageId,receivedDateTime",
+    $top: "50",
+  });
   const res = await fetch(
-    `https://graph.microsoft.com/v1.0/users/${MAILBOX}/mailFolders/inbox/messages?$filter=isRead eq false`,
+    `https://graph.microsoft.com/v1.0/users/${MAILBOX}/mailFolders/inbox/messages?${query.toString()}`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
-  const data = await res.json();
-  if (!res.ok) throw new Error("Graph error");
+  const raw = await res.text();
+  let data = {};
+
+  try {
+    data = raw ? JSON.parse(raw) : {};
+  } catch {
+    throw new Error(`Graph response was not valid JSON: ${raw || "empty response"}`);
+  }
+
+  if (!res.ok) {
+    throw new Error(
+      `Graph error (${res.status} ${res.statusText}): ${
+        data.error?.message || raw || "Unknown error"
+      }`
+    );
+  }
+
   const supportAddress = MAILBOX.toLowerCase();
 
   return (data.value || []).filter((mail) =>
