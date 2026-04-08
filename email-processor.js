@@ -77,12 +77,17 @@ async function getAccessToken() {
 async function fetchUnreadEmails() {
   const token = await getAccessToken();
   const res = await fetch(
-    `https://graph.microsoft.com/v1.0/users/${MAILBOX}/mailFolders/inbox/messages?$filter=isRead eq false`,
+    `https://graph.microsoft.com/v1.0/users/${MAILBOX}/mailFolders/inbox/messages?$filter=isRead eq false&$select=id,internetMessageId,subject,bodyPreview,body,receivedDateTime,from,toRecipients,ccRecipients,replyTo,inReplyTo,conversationId`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
   const data = await res.json();
   if (!res.ok) throw new Error("Graph error");
-  return data.value || [];
+  const filtered = (data.value || []).filter((mail) =>
+    mail.toRecipients?.some(
+      (r) => r.emailAddress?.address?.toLowerCase() === MAILBOX.toLowerCase()
+    )
+  );
+  return filtered;
 }
 
 /* -------------------------
