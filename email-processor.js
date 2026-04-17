@@ -834,7 +834,6 @@ function buildReply({
   orderIds,
   decision,
   orderData,
-  needsOrderIdHelp = false,
 }) {
   // 1. Missing Order ID check
   const activeOrderId = orderIds[0] || null;
@@ -854,7 +853,6 @@ function buildReply({
 
   const needsOrderId = intentsNeedingId.includes(intent);
 
-  if (!activeOrderId && needsOrderIdHelp) return templates.ask_order_id();
   if (!activeOrderId && needsOrderId) return templates.ask_order_id();
 
   const id = activeOrderId || "";
@@ -1108,10 +1106,6 @@ async function processEmails() {
         }
 
         // 6. Build and Send Reply
-        const resolvedOrderId = orderIds[0] || null;
-        const needsOrderIdHelp = isOrderIdLookupHelpRequest(
-          emailContext?.latestMessageText || ""
-        );
         const fallbackReply = buildReply({
           intent,
           risk,
@@ -1119,8 +1113,11 @@ async function processEmails() {
           orderIds,
           decision,
           orderData,
-          needsOrderIdHelp,
         });
+        const resolvedOrderId = orderIds[0] || null;
+        const needsOrderIdHelp = isOrderIdLookupHelpRequest(
+          emailContext?.latestMessageText || ""
+        );
 
         const replyBody = await generateEmpatheticReply({
           emailContext,
