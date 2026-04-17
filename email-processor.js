@@ -817,17 +817,10 @@ function buildReply({
   confidence,
   orderIds,
   decision,
-  suggestedOrder,
-  multipleOrders,
   orderData,
 }) {
-  // 1. Multiple Orders Found -> Ask user to choose
-  if (multipleOrders && multipleOrders.length > 1) {
-    return templates.multiple_orders_found(multipleOrders);
-  }
-
-  // 2. Missing Order ID check
-  const activeOrderId = orderIds[0] || suggestedOrder;
+  // 1. Missing Order ID check
+  const activeOrderId = orderIds[0] || null;
 
   // Risk override should still preserve order context if we have it.
   if (risk) return templates.high_risk_escalation(activeOrderId || "", getRefundRef(orderData) || "ARN123456789");
@@ -861,7 +854,7 @@ function buildReply({
     refundRef,
   });
 
-  // 3. Intent Routing
+  // 2. Intent Routing
   switch (intent) {
     case "order_status": {
       const status = orderData?.status?.toLowerCase() || "processing";
@@ -1040,24 +1033,10 @@ async function processEmails() {
           }
         }
 
-        // --- ORDER ID INFERENCE START ---
-        let suggestedOrder = null;
-        let multipleOrders = null;
-
-        if (orderIds.length === 0 && senderEmailOriginal) {
-          const customerOrders = await fetchCustomerOrders(senderEmailOriginal);
-
-          if (customerOrders && customerOrders.length === 1) {
-            suggestedOrder = customerOrders[0].order_id;
-            console.log(`   ✅ Auto-inferred Order ID: ${suggestedOrder}`);
-          } else if (customerOrders && customerOrders.length > 1) {
-            multipleOrders = customerOrders;
-            console.log(`   ⚠️ Multiple orders found: ${customerOrders.length}`);
-          } else {
-            console.log(`   ❌ No orders found for ${senderEmailOriginal}`);
-          }
-        }
-        // --- ORDER ID INFERENCE END ---
+        // Only trust order IDs explicitly present in the current email/thread or
+        // previously established in the same conversation. Do not infer an order
+        // from the customer's email address because it can point to an older,
+        // unrelated purchase.
 
         // 4. Create Case
         const casePayload = {
@@ -1094,7 +1073,7 @@ async function processEmails() {
         }
 
         // 5. Store Orders & Fetch Data
-        const finalOrderId = orderIds[0] || suggestedOrder;
+        const finalOrderId = orderIds[0] || null;
         let orderData = null;
 
         if (finalOrderId) {
@@ -1117,14 +1096,9 @@ async function processEmails() {
           confidence,
           orderIds,
           decision,
-          suggestedOrder,
-          multipleOrders,
           orderData,
         });
-        const resolvedOrderId = orderIds[0] || suggestedOrder || null;
-        const shouldForceFallback =
-          !resolvedOrderId &&
-          (Array.isArray(multipleOrders) && multipleOrders.length > 1);
+        const resolvedOrderId = orderIds[0] || null;
 
         const replyBody = await generateEmpatheticReply({
           emailContext,
@@ -1133,7 +1107,7 @@ async function processEmails() {
           orderId: resolvedOrderId,
           orderData,
           fallbackReply,
-          forceFallback: shouldForceFallback || (!resolvedOrderId && [
+          forceFallback: (!resolvedOrderId && [
             "order_status",
             "refund_not_received",
             "invoice_request",
