@@ -472,6 +472,21 @@ function buildDemoReferences(orderId = "") {
   };
 }
 
+function isOrderIdLookupHelpRequest(text = "") {
+  const normalized = normalizeWhitespace(String(text || "").toLowerCase());
+
+  if (!normalized) return false;
+
+  return [
+    /\bi do(?:\s+not|n't)\s+know\s+my\s+order\s*id\b/,
+    /\bwhere\s+(?:can\s+i\s+)?find\s+my\s+order\s*id\b/,
+    /\bhow\s+(?:do|can)\s+i\s+find\s+my\s+order\s*id\b/,
+    /\b(?:can't|cannot)\s+find\s+my\s+order\s*id\b/,
+    /\bdo(?:\s+not|n't)\s+have\s+my\s+order\s*id\b/,
+    /\border\s*id\s+(?:missing|not available|not handy)\b/,
+  ].some((pattern) => pattern.test(normalized));
+}
+
 function buildReferenceLines({
   trackingRef = null,
   trackingUrl = null,
@@ -499,7 +514,7 @@ function buildReferenceLines({
 function buildOrderFacts(orderData = {}, orderId = "") {
   const facts = [];
   const status = orderData?.status || null;
-  const demoRefs = DEMO_MODE ? buildDemoReferences(orderId) : {};
+  const demoRefs = DEMO_MODE && orderId ? buildDemoReferences(orderId) : {};
   const trackingRef = getTrackingRef(orderData) || demoRefs.trackingRef || null;
   const trackingUrl = getTrackingUrl(orderData) || demoRefs.trackingUrl || null;
   const transactionRef =
@@ -562,6 +577,7 @@ Rules:
 - If DEMO_MODE is true, naturally weave demo references into the reply while making it clear they are demo/sample references.
 - Do not ask for the order ID again if an order ID is already available in verified facts.
 - Use only the verified facts listed above for order, tracking, transaction, refund, ARN, and RRN details.
+- If no verified order facts are available, do not say you found the order, do not mention any order ID, and do not mention tracking, refund, ARN, RRN, or transaction references.
 - If a tracking, transaction, ARN, or RRN reference is available, include it clearly.
 - If DEMO_MODE is true and demo references are present, mention them in natural support language such as ", your sample tracking number is...".
 - If a refund is being demanded but the verified facts only show packing/shipping status, acknowledge the frustration and explain the current verified status without inventing a refund.
@@ -592,7 +608,7 @@ const templates = {
   ask_order_id: () => `
 Hello,<br><br>
 Thank you for reaching out to Puma Support.<br>
-To assist you better, could you please share your <b>Order ID</b> (e.g., PUMA-123456)?<br><br>
+To assist you better, could you please share your <b>Order ID</b>? You can usually find it in your order confirmation email, invoice, or SMS update from Puma.<br><br>
 Once we have the Order ID, we will check and update you at the earliest.<br><br>
 Regards,<br>
 Puma Support
@@ -1099,6 +1115,9 @@ async function processEmails() {
           orderData,
         });
         const resolvedOrderId = orderIds[0] || null;
+        const needsOrderIdHelp = isOrderIdLookupHelpRequest(
+          emailContext?.latestMessageText || ""
+        );
 
         const replyBody = await generateEmpatheticReply({
           emailContext,
@@ -1107,15 +1126,18 @@ async function processEmails() {
           orderId: resolvedOrderId,
           orderData,
           fallbackReply,
-          forceFallback: (!resolvedOrderId && [
-            "order_status",
-            "refund_not_received",
-            "invoice_request",
-            "report_problem",
-            "delivery_issue",
-            "payment_issue",
-            "return_exchange_request",
-          ].includes(intent)),
+          forceFallback:
+            (!resolvedOrderId &&
+              [
+                "order_status",
+                "refund_not_received",
+                "invoice_request",
+                "report_problem",
+                "delivery_issue",
+                "payment_issue",
+                "return_exchange_request",
+              ].includes(intent)) ||
+            (!resolvedOrderId && needsOrderIdHelp),
         });
 
         let communicationStatus = "drafted";
