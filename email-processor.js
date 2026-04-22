@@ -1,4 +1,5 @@
 import fetch from "node-fetch";
+import { fileURLToPath } from "url";
 import { detectIntent } from "./engines/intentEngine.js";
 import { detectRisk } from "./engines/riskEngine.js";
 import { decideRoute } from "./engines/decisionEngine.js";
@@ -14,7 +15,6 @@ const MAILBOX = "support@puma.quantaops.com";
 const AUTO_SEND_REPLIES = process.env.AUTO_SEND_REPLIES === "true";
 const ALLOWED_RECIPIENTS = [MAILBOX.toLowerCase()];
 const BLOCKED_SENDER_PATTERNS = ["tenant-app", "tenantapp", "hello@kots.world","vijeth@kots.world"];
-const DEMO_MODE = process.env.DEMO_MODE === "true";
 
 // Backend API URL (default to localhost if not set)
 const API_URL =
@@ -24,10 +24,14 @@ const API_URL =
    API HELPERS
 --------------------------*/
 async function apiCall(endpoint, method, body) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+
   try {
     const options = {
       method,
       headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
     };
     if (body) options.body = JSON.stringify(body);
 
@@ -41,8 +45,10 @@ async function apiCall(endpoint, method, body) {
 
     return res.json();
   } catch (e) {
-    console.error(`❌ API Network Error [${method} ${endpoint}]:`, e.message);
+    console.error(`API Network Error [${method} ${endpoint}]:`, e.message);
     return null;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -51,7 +57,30 @@ async function fetchCustomerOrders(email) {
 }
 
 async function fetchOrderById(orderId) {
-  return await apiCall(`/orders/${orderId}`, "GET");
+  return normalizeOrderRecord(await apiCall(`/orders/${orderId}`, "GET"));
+}
+
+function normalizeOrderRecord(payload) {
+  if (!payload || typeof payload !== "object") return null;
+
+  if (payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)) {
+    return normalizeOrderRecord(payload.data);
+  }
+
+  if (payload.order && typeof payload.order === "object" && !Array.isArray(payload.order)) {
+    return normalizeOrderRecord(payload.order);
+  }
+
+  if (Array.isArray(payload.rows) && payload.rows[0]) {
+    return normalizeOrderRecord(payload.rows[0]);
+  }
+
+  const keys = Object.keys(payload);
+  const metadataOnly = keys.every((key) =>
+    ["error", "message", "success", "statusCode", "status_code"].includes(key)
+  );
+
+  return metadataOnly ? null : payload;
 }
 
 /* -------------------------
@@ -234,8 +263,30 @@ async function createReplyDraft(messageId, body) {
 /* -------------------------
    HELPERS
 --------------------------*/
-function extractOrderIds(text = "") {
-  return [...new Set(text.match(/\b\d{5,}\b/g) || [])];
+export function extractOrderIds(text = "") {
+  const source = String(text || "");
+  const matches = [];
+  const patterns = [
+    /\border\s*(?:id|number|no\.?)?\s*[:#-]?\s*(?:is\s+)?(?:puma[-\s]*)?(\d{5,})\b/gi,
+    /\b(?:puma[-\s])(\d{5,})\b/gi,
+  ];
+
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(source)) !== null) {
+      const candidate = match[1];
+      const start = Math.max(0, match.index - 24);
+      const end = Math.min(source.length, pattern.lastIndex + 24);
+      const context = source.slice(start, end).toLowerCase();
+
+      // Ignore sample/example/demo references so they do not become real orders.
+      if (/\b(?:e\.g\.|eg|example|sample|demo)\b/.test(context)) continue;
+
+      matches.push(candidate);
+    }
+  }
+
+  return [...new Set(matches)];
 }
 
 function decodeHtmlEntities(text = "") {
@@ -462,16 +513,6 @@ function getTransactionRef(orderData) {
   );
 }
 
-function buildDemoReferences(orderId = "") {
-  const suffix = orderId || "PUMA";
-  return {
-    trackingRef: `DEMO-TRK-${suffix}`,
-    trackingUrl: `https://example.com/demo-tracking/${encodeURIComponent(suffix)}`,
-    transactionRef: `DEMO-TXN-${suffix}`,
-    refundRef: `DEMO-RRN-${suffix}`,
-  };
-}
-
 function isOrderIdLookupHelpRequest(text = "") {
   const normalized = normalizeWhitespace(String(text || "").toLowerCase());
 
@@ -514,33 +555,65 @@ function buildReferenceLines({
 function buildOrderFacts(orderData = {}, orderId = "") {
   const facts = [];
   const status = orderData?.status || null;
-  const demoRefs = DEMO_MODE && orderId ? buildDemoReferences(orderId) : {};
-  const trackingRef = getTrackingRef(orderData) || demoRefs.trackingRef || null;
-  const trackingUrl = getTrackingUrl(orderData) || demoRefs.trackingUrl || null;
-  const transactionRef =
-    getTransactionRef(orderData) || demoRefs.transactionRef || null;
-  const refundRef = getRefundRef(orderData) || demoRefs.refundRef || null;
+  const trackingRef = getTrackingRef(orderData) || null;
+  const trackingUrl = getTrackingUrl(orderData) || null;
+  const transactionRef = getTransactionRef(orderData) || null;
+  const refundRef = getRefundRef(orderData) || null;
 
   if (orderId) facts.push(`Order ID: ${orderId}`);
   if (status) facts.push(`Order Status: ${status}`);
-  if (trackingRef)
-    facts.push(`${DEMO_MODE ? "Demo " : ""}Tracking Number: ${trackingRef}`);
-  if (trackingUrl)
-    facts.push(`${DEMO_MODE ? "Demo " : ""}Tracking URL: ${trackingUrl}`);
-  if (transactionRef) {
-    facts.push(
-      `${DEMO_MODE ? "Demo " : ""}Transaction Reference: ${transactionRef}`
-    );
-  }
-  if (refundRef) {
-    facts.push(
-      `${DEMO_MODE ? "Demo " : ""}Refund Reference / ARN / RRN: ${refundRef}`
-    );
-  }
+  if (trackingRef) facts.push(`Tracking Number: ${trackingRef}`);
+  if (trackingUrl) facts.push(`Tracking URL: ${trackingUrl}`);
+  if (transactionRef) facts.push(`Transaction Reference: ${transactionRef}`);
+  if (refundRef) facts.push(`Refund Reference / ARN / RRN: ${refundRef}`);
   if (orderData?.refund_status) facts.push(`Refund Status: ${orderData.refund_status}`);
   if (orderData?.created_at) facts.push(`Order Created At: ${orderData.created_at}`);
 
   return facts;
+}
+
+function hasVerifiedOrderData(orderData) {
+  if (!orderData || typeof orderData !== "object") return false;
+  const keys = Object.keys(orderData);
+  if (!keys.length) return false;
+  return !keys.every((key) =>
+    ["error", "message", "success", "statusCode", "status_code"].includes(key)
+  );
+}
+
+function hasUnsupportedOperationalReference(reply = "", { orderId, orderData } = {}) {
+  const text = stripHtml(String(reply || ""));
+  const allowedRefs = [
+    orderId,
+    getTrackingRef(orderData),
+    getTrackingUrl(orderData),
+    getTransactionRef(orderData),
+    getRefundRef(orderData),
+  ]
+    .filter(Boolean)
+    .map(String);
+
+  const hasAllowedRef = (value) =>
+    allowedRefs.some((allowed) => allowed.toLowerCase() === String(value).toLowerCase());
+
+  for (const id of extractOrderIds(text)) {
+    if (!hasAllowedRef(id)) return true;
+  }
+
+  const referencePatterns = [
+    /\b(?:ARN|RRN|UTR|TXN|TRK|AWB)[-\s:]?[A-Z0-9]{4,}\b/gi,
+    /\b(?:refund|transaction|tracking)\s+(?:reference|number|id)\s*[:#-]?\s*([A-Z0-9-]{4,})\b/gi,
+  ];
+
+  for (const pattern of referencePatterns) {
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      const value = match[1] || match[0];
+      if (!hasAllowedRef(value)) return true;
+    }
+  }
+
+  return false;
 }
 
 async function generateEmpatheticReply({
@@ -567,19 +640,17 @@ ${emailContext?.threadText || ""}
 Detected intent: ${intent}
 Routing owner: ${decision?.owner || "ai"}
 Case status: ${decision?.status || "open"}
-DEMO_MODE: ${DEMO_MODE}
 
 Verified facts you may use:
 ${facts.length ? facts.map((fact) => `- ${fact}`).join("\n") : "- No verified order facts available"}
 
 Rules:
 - Be empathetic, calm, and human.
-- If DEMO_MODE is true, naturally weave demo references into the reply while making it clear they are demo/sample references.
 - Do not ask for the order ID again if an order ID is already available in verified facts.
 - Use only the verified facts listed above for order, tracking, transaction, refund, ARN, and RRN details.
 - If no verified order facts are available, do not say you found the order, do not mention any order ID, and do not mention tracking, refund, ARN, RRN, or transaction references.
 - If a tracking, transaction, ARN, or RRN reference is available, include it clearly.
-- If DEMO_MODE is true and demo references are present, mention them in natural support language such as ", your sample tracking number is...".
+- Never invent or guess order IDs, tracking numbers, transaction references, refund references, ARN, RRN, or generic placeholders.
 - If a refund is being demanded but the verified facts only show packing/shipping status, acknowledge the frustration and explain the current verified status without inventing a refund.
 - Keep the reply concise and practical.
 - Output HTML only using <br> for line breaks.
@@ -589,11 +660,18 @@ Puma Support
 `;
 
   try {
-    return await callLLM(prompt, {
+    const reply = await callLLM(prompt, {
       systemPrompt:
         "You are Puma Support's email reply writer. Be empathetic, specific, and never invent operational facts.",
       temperature: 0.4,
     });
+
+    if (hasUnsupportedOperationalReference(reply, { orderId, orderData })) {
+      console.warn("LLM reply included an unverified operational reference; using fallback template.");
+      return fallbackReply;
+    }
+
+    return reply;
   } catch (error) {
     console.error("Reply generation error:", error.message);
     return fallbackReply;
@@ -610,6 +688,15 @@ Hello,<br><br>
 Thank you for reaching out to Puma Support.<br>
 To assist you better, could you please share your <b>Order ID</b>? You can usually find it in your order confirmation email, invoice, or SMS update from Puma.<br><br>
 Once we have the Order ID, we will check and update you at the earliest.<br><br>
+Regards,<br>
+Puma Support
+`,
+
+  order_not_found: (id) => `
+Hello,<br><br>
+Thank you for reaching out to Puma Support.<br>
+We could not find verified order details for <b>${id}</b> in our records.<br>
+Please check the Order ID and reply with the correct one, or share the registered email/phone number used for the purchase so we can verify it further.<br><br>
 Regards,<br>
 Puma Support
 `,
@@ -767,11 +854,11 @@ Regards,<br>
 Puma Support
 `,
 
-  refund_processed: (id, ref = "N/A") => `
+  refund_processed: (id, ref = null) => `
 Hello,<br><br>
 Your refund for order <b>${id}</b> has been processed successfully.<br>
-<b>Refund Reference / ARN:</b> ${ref}<br><br>
-If the amount is not visible yet, kindly check with your bank using the above reference number.<br><br>
+${ref ? `<b>Refund Reference / ARN:</b> ${ref}<br>` : ""}
+${ref ? "If the amount is not visible yet, kindly check with your bank using the above reference number.<br><br>" : "If the amount is not visible yet, please reply here and we will help verify it with our Finance Team.<br><br>"}
 Regards,<br>
 Puma Support
 `,
@@ -787,11 +874,11 @@ Puma Support
 `,
 
   // --- 7. Risk / Other ---
- high_risk_escalation: (id, arn = "ARN123456789") => `
+ high_risk_escalation: (id, arn = null) => `
 Hello,<br><br>
 Thank you for reaching out to us${id ? ` regarding order <b>${id}</b>` : ""}.<br><br>
 Your email has been flagged for priority review and has been assigned to a support specialist.<br>
-<b>Refund Reference / ARN:</b> ${arn}<br><br>
+${arn ? `<b>Refund Reference / ARN:</b> ${arn}<br>` : ""}
 Our team will get back to you shortly with the next steps.<br><br>
 Regards,<br>
 Puma Support
@@ -834,12 +921,13 @@ function buildReply({
   orderIds,
   decision,
   orderData,
+  needsOrderIdHelp = false,
 }) {
   // 1. Missing Order ID check
   const activeOrderId = orderIds[0] || null;
 
   // Risk override should still preserve order context if we have it.
-  if (risk) return templates.high_risk_escalation(activeOrderId || "", getRefundRef(orderData) || "ARN123456789");
+  if (risk) return templates.high_risk_escalation(activeOrderId || "", getRefundRef(orderData));
 
   const intentsNeedingId = [
     "order_status",
@@ -853,9 +941,15 @@ function buildReply({
 
   const needsOrderId = intentsNeedingId.includes(intent);
 
+  if (!activeOrderId && needsOrderIdHelp) return templates.ask_order_id();
   if (!activeOrderId && needsOrderId) return templates.ask_order_id();
 
   const id = activeOrderId || "";
+
+  if (needsOrderId && id && !hasVerifiedOrderData(orderData)) {
+    return templates.order_not_found(id);
+  }
+
   const isAgentHandoff =
     decision?.owner === "agent" || decision?.owner === "senior_support";
 
@@ -883,19 +977,18 @@ function buildReply({
         return templates.delivery_attempt_failed(id, trackingUrl);
       }
 
-      if (isAgentHandoff)
-        return templates.agent_handoff_stuck(id || "YOUR_ORDER");
+      if (isAgentHandoff) return templates.agent_handoff_stuck(id);
 
       return templates.order_shipped(id, referenceLines);
     }
 
     case "refund_not_received": {
       if (isAgentHandoff)
-        return templates.refund_issue_handoff(id || "YOUR_ORDER", refundRef);
+        return templates.refund_issue_handoff(id, refundRef);
 
       const refundStatus = (orderData?.refund_status || "").toLowerCase();
       if (refundStatus === "processed" || refundStatus === "success") {
-        return templates.refund_processed(id, refundRef || "N/A");
+        return templates.refund_processed(id, refundRef);
       }
 
       return templates.refund_in_sla(id, refundRef);
@@ -921,6 +1014,173 @@ function buildReply({
       if (confidence < 0.7) return templates.unclear_intent();
       return templates.agent_handoff_generic(id);
   }
+}
+
+function decideRouteLocally({ intent, confidence, risk }) {
+  if (risk) {
+    return { status: "escalated", owner: "senior_support", reason: "risk_override" };
+  }
+
+  if (confidence < 0.7) {
+    return { status: "open", owner: "agent", reason: "confidence_below_threshold" };
+  }
+
+  if (
+    [
+      "order_status",
+      "refund_not_received",
+      "cancellation_request",
+      "address_change_request",
+      "invoice_request",
+    ].includes(intent)
+  ) {
+    return { status: "resolved", owner: "ai", reason: "local_policy" };
+  }
+
+  return { status: "open", owner: "agent", reason: "local_policy" };
+}
+
+export async function simulateLocalResponse({
+  subject = "",
+  bodyText = "",
+  bodyHtml = "",
+  fromEmail = "customer@example.com",
+  intent: intentOverride = "",
+  confidence: confidenceOverride = null,
+  risk: riskOverride = null,
+  orderId: orderIdOverride = "",
+  useLLMReply = true,
+  trustedOrderData,
+  trustTableOnly = false,
+} = {}) {
+  const email = {
+    id: "local-test-message",
+    conversationId: "local-test-conversation",
+    internetMessageId: "local-test-internet-message",
+    subject,
+    bodyPreview: bodyText,
+    body: {
+      contentType: bodyHtml ? "HTML" : "Text",
+      content: bodyHtml || bodyText,
+    },
+    from: {
+      emailAddress: {
+        name: "Local Tester",
+        address: fromEmail,
+      },
+    },
+    toRecipients: [
+      {
+        emailAddress: {
+          address: MAILBOX,
+        },
+      },
+    ],
+    ccRecipients: [],
+    replyTo: [],
+    receivedDateTime: new Date().toISOString(),
+  };
+
+  const emailContext = buildEmailContext(email);
+  const analysisInput = {
+    ...email,
+    ...emailContext,
+  };
+
+  const intentRes = intentOverride
+    ? { intent: intentOverride, confidence: confidenceOverride ?? 0.95 }
+    : await detectIntent(analysisInput);
+  const riskRes =
+    riskOverride === null
+      ? await detectRisk(analysisInput)
+      : { risk: Boolean(riskOverride), reason: riskOverride ? "local_override" : null };
+
+  const intent = intentRes.intent || "unknown";
+  const confidence = Number(confidenceOverride ?? intentRes.confidence ?? 0.1);
+  const risk = Boolean(riskRes.risk);
+  const decision =
+    intentOverride || riskOverride !== null
+      ? decideRouteLocally({ intent, confidence, risk })
+      : await decideRoute({
+          intent,
+          confidence,
+          risk,
+          emailContext,
+          intentMeta: intentRes,
+          riskMeta: riskRes,
+        });
+
+  const extractedOrderIds = extractOrderIds(emailContext.searchText);
+  const orderIds = orderIdOverride
+    ? [String(orderIdOverride)]
+    : extractedOrderIds;
+  const resolvedOrderId = orderIds[0] || null;
+
+  const orderData =
+    trustedOrderData !== undefined
+      ? trustedOrderData
+      : resolvedOrderId && !trustTableOnly
+        ? await fetchOrderById(resolvedOrderId)
+        : null;
+
+  const needsOrderIdHelp = isOrderIdLookupHelpRequest(
+    emailContext?.latestMessageText || ""
+  );
+  const fallbackReply = buildReply({
+    intent,
+    risk,
+    confidence,
+    orderIds,
+    decision,
+    orderData,
+    needsOrderIdHelp,
+  });
+
+  const replyBody = await generateEmpatheticReply({
+    emailContext,
+    intent,
+    decision,
+    orderId: resolvedOrderId,
+    orderData,
+    fallbackReply,
+    forceFallback:
+      !useLLMReply ||
+      (resolvedOrderId &&
+        !hasVerifiedOrderData(orderData) &&
+        [
+          "order_status",
+          "refund_not_received",
+          "invoice_request",
+          "report_problem",
+          "delivery_issue",
+          "payment_issue",
+          "return_exchange_request",
+        ].includes(intent)) ||
+      (!resolvedOrderId &&
+        [
+          "order_status",
+          "refund_not_received",
+          "invoice_request",
+          "report_problem",
+          "delivery_issue",
+          "payment_issue",
+          "return_exchange_request",
+        ].includes(intent)) ||
+      (!resolvedOrderId && needsOrderIdHelp),
+  });
+
+  return {
+    replyBody,
+    intent,
+    confidence,
+    risk,
+    decision,
+    orderIds,
+    orderData,
+    needsOrderIdHelp,
+    fallbackReply,
+    usedLLMReply: useLLMReply && replyBody !== fallbackReply,
+  };
 }
 
 /* -------------------------
@@ -1106,6 +1366,10 @@ async function processEmails() {
         }
 
         // 6. Build and Send Reply
+        const resolvedOrderId = orderIds[0] || null;
+        const needsOrderIdHelp = isOrderIdLookupHelpRequest(
+          emailContext?.latestMessageText || ""
+        );
         const fallbackReply = buildReply({
           intent,
           risk,
@@ -1113,11 +1377,8 @@ async function processEmails() {
           orderIds,
           decision,
           orderData,
+          needsOrderIdHelp,
         });
-        const resolvedOrderId = orderIds[0] || null;
-        const needsOrderIdHelp = isOrderIdLookupHelpRequest(
-          emailContext?.latestMessageText || ""
-        );
 
         const replyBody = await generateEmpatheticReply({
           emailContext,
@@ -1127,6 +1388,17 @@ async function processEmails() {
           orderData,
           fallbackReply,
           forceFallback:
+            (resolvedOrderId &&
+              !hasVerifiedOrderData(orderData) &&
+              [
+                "order_status",
+                "refund_not_received",
+                "invoice_request",
+                "report_problem",
+                "delivery_issue",
+                "payment_issue",
+                "return_exchange_request",
+              ].includes(intent)) ||
             (!resolvedOrderId &&
               [
                 "order_status",
@@ -1197,4 +1469,9 @@ async function startWorker() {
   }
 }
 
-startWorker();
+const isDirectRun =
+  process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+
+if (isDirectRun) {
+  startWorker();
+}
