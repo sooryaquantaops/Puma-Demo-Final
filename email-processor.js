@@ -53,7 +53,9 @@ async function apiCall(endpoint, method, body) {
 }
 
 async function fetchCustomerOrders(email) {
-  return await apiCall(`/orders?email=${encodeURIComponent(email)}`, "GET");
+  return normalizeOrderList(
+    await apiCall(`/orders?email=${encodeURIComponent(email)}`, "GET")
+  );
 }
 
 async function fetchOrderById(orderId) {
@@ -81,6 +83,23 @@ function normalizeOrderRecord(payload) {
   );
 
   return metadataOnly ? null : payload;
+}
+
+function normalizeOrderList(payload) {
+  if (!payload) return [];
+  if (Array.isArray(payload)) return payload.map(normalizeOrderRecord).filter(Boolean);
+  if (Array.isArray(payload?.data)) {
+    return payload.data.map(normalizeOrderRecord).filter(Boolean);
+  }
+  if (Array.isArray(payload?.orders)) {
+    return payload.orders.map(normalizeOrderRecord).filter(Boolean);
+  }
+  if (Array.isArray(payload?.rows)) {
+    return payload.rows.map(normalizeOrderRecord).filter(Boolean);
+  }
+
+  const single = normalizeOrderRecord(payload);
+  return single ? [single] : [];
 }
 
 /* -------------------------
@@ -269,6 +288,7 @@ export function extractOrderIds(text = "") {
   const patterns = [
     /\border\s*(?:id|number|no\.?)?\s*[:#-]?\s*(?:is\s+)?(?:puma[-\s]*)?(\d{5,})\b/gi,
     /\b(?:puma[-\s])(\d{5,})\b/gi,
+    /\b(\d{5,18})\b/g,
   ];
 
   for (const pattern of patterns) {
@@ -281,6 +301,16 @@ export function extractOrderIds(text = "") {
 
       // Ignore sample/example/demo references so they do not become real orders.
       if (/\b(?:e\.g\.|eg|example|sample|demo)\b/.test(context)) continue;
+
+      // Bare numbers are allowed because we verify them against the order table
+      // before replying, but skip common non-order numeric contexts.
+      if (
+        /\b(?:otp|pin|pincode|postal|zip|phone|mobile|contact|ticket|case|amount|rs|inr)\b/.test(
+          context
+        )
+      ) {
+        continue;
+      }
 
       matches.push(candidate);
     }
@@ -706,7 +736,7 @@ Puma Support
       .map(
         (o) => `
       <tr>
-        <td style="border: 1px solid #ddd; padding: 8px;">${o.order_id}</td>
+        <td style="border: 1px solid #ddd; padding: 8px;">${o.order_id || o.id || o.order_number || "NA"}</td>
         <td style="border: 1px solid #ddd; padding: 8px;">${o.items || "Items"}</td>
         <td style="border: 1px solid #ddd; padding: 8px;">${o.status || "NA"}</td>
         <td style="border: 1px solid #ddd; padding: 8px;">${o.created_at || "NA"}</td>
@@ -718,7 +748,7 @@ Puma Support
     return `
 Hello,<br><br>
 Thank you for contacting Puma Support.<br>
-We found multiple recent orders linked to your email. Please reply with the specific <b>Order ID</b> from the list below so we can assist you correctly:<br><br>
+I was able to pull these order records linked to your email. Please reply with the specific <b>Order ID</b> from the list below so we can assist you correctly:<br><br>
 <table style="border-collapse: collapse; width: 100%;">
   <thead>
     <tr style="background-color: #f2f2f2;">
@@ -921,6 +951,7 @@ function buildReply({
   orderIds,
   decision,
   orderData,
+  customerOrders = [],
   needsOrderIdHelp = false,
 }) {
   // 1. Missing Order ID check
@@ -941,12 +972,17 @@ function buildReply({
 
   const needsOrderId = intentsNeedingId.includes(intent);
 
+  if (needsOrderId && !activeOrderId && customerOrders.length) {
+    return templates.multiple_orders_found(customerOrders);
+  }
+
   if (!activeOrderId && needsOrderIdHelp) return templates.ask_order_id();
   if (!activeOrderId && needsOrderId) return templates.ask_order_id();
 
   const id = activeOrderId || "";
 
   if (needsOrderId && id && !hasVerifiedOrderData(orderData)) {
+    if (customerOrders.length) return templates.multiple_orders_found(customerOrders);
     return templates.order_not_found(id);
   }
 
@@ -1051,6 +1087,7 @@ export async function simulateLocalResponse({
   orderId: orderIdOverride = "",
   useLLMReply = true,
   trustedOrderData,
+  trustedCustomerOrders,
   trustTableOnly = false,
 } = {}) {
   const email = {
@@ -1122,6 +1159,12 @@ export async function simulateLocalResponse({
       : resolvedOrderId && !trustTableOnly
         ? await fetchOrderById(resolvedOrderId)
         : null;
+  const customerOrders =
+    trustedCustomerOrders !== undefined
+      ? trustedCustomerOrders
+      : fromEmail
+        ? await fetchCustomerOrders(fromEmail)
+        : [];
 
   const needsOrderIdHelp = isOrderIdLookupHelpRequest(
     emailContext?.latestMessageText || ""
@@ -1133,6 +1176,7 @@ export async function simulateLocalResponse({
     orderIds,
     decision,
     orderData,
+    customerOrders,
     needsOrderIdHelp,
   });
 
@@ -1351,6 +1395,7 @@ async function processEmails() {
         // 5. Store Orders & Fetch Data
         const finalOrderId = orderIds[0] || null;
         let orderData = null;
+        let customerOrders = [];
 
         if (finalOrderId) {
           if (caseId) {
@@ -1365,6 +1410,10 @@ async function processEmails() {
           orderData = await fetchOrderById(finalOrderId);
         }
 
+        if (!hasVerifiedOrderData(orderData) && senderEmailOriginal) {
+          customerOrders = await fetchCustomerOrders(senderEmailOriginal);
+        }
+
         // 6. Build and Send Reply
         const resolvedOrderId = orderIds[0] || null;
         const needsOrderIdHelp = isOrderIdLookupHelpRequest(
@@ -1377,6 +1426,7 @@ async function processEmails() {
           orderIds,
           decision,
           orderData,
+          customerOrders,
           needsOrderIdHelp,
         });
 
